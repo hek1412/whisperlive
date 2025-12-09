@@ -1,0 +1,38 @@
+FROM python:3.10-slim-bookworm
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+# Install system dependencies
+RUN apt update && apt install -y \
+    portaudio19-dev \
+    ffmpeg \
+    git \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Update pip
+RUN pip install --no-cache-dir -U "pip>=24"
+
+# Create working directory
+WORKDIR /app
+
+# Copy requirements and install dependencies
+COPY requirements/server.txt /app/requirements_server.txt
+COPY requirements_api.txt /app/
+RUN pip install --no-cache-dir -r requirements_server.txt
+RUN pip install --no-cache-dir -r requirements_api.txt
+
+# Copy application code
+COPY whisper_live /app/whisper_live
+COPY run_server_unified.py /app/
+COPY prompt.yaml /app/
+
+# Set environment variables for CPU optimization
+ENV OMP_NUM_THREADS=4
+ENV MKL_NUM_THREADS=4
+
+# Expose port
+EXPOSE 9090
+
+# Run server
+CMD ["python", "run_server_unified.py"]

@@ -1,0 +1,72 @@
+version: '3.8'
+
+services:
+  whisperlive-server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.cpu_unified
+    container_name: whisperlive-server-cpu
+    ports:
+      - "5168:9090"  # External:Internal port mapping
+    environment:
+      # API Authentication
+      - API_KEY=your-secret-api-key-change-in-production
+
+      # LLM Configuration for Summarization (Optional)
+      # For local Ollama:
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=qwen2.5:latest
+      # OLLAMA_API_KEY not required for local Ollama
+
+      # For external vLLM API:
+      # - OLLAMA_BASE_URL=https://ollama-ui-llm-service.agents.1t.ru/api
+      # - OLLAMA_API_KEY=sk-your-api-key
+      # - OLLAMA_MODEL=vllm.Qwen3-VL-32B-Instruct-AWQ
+
+      # Session Configuration
+      - SESSION_TTL=3600          # Session time-to-live in seconds (1 hour)
+      - CLEANUP_INTERVAL=60       # Cleanup interval in seconds
+
+      # CPU Optimization
+      - OMP_NUM_THREADS=4
+      - MKL_NUM_THREADS=4
+
+      # Proxy settings (if needed)
+      # - https_proxy=http://proxy.example.com:8080
+      # - http_proxy=http://proxy.example.com:8080
+      # - no_proxy=localhost,127.0.0.1
+
+    volumes:
+      # Cache Whisper models to avoid re-downloading
+      - ./models:/root/.cache/huggingface/hub
+      - ./whisper-cache:/root/.cache/whisper-live
+
+      # Optional: mount custom prompt configuration
+      - ./prompt.yaml:/app/prompt.yaml:ro
+
+    restart: unless-stopped
+
+    # Resource limits (adjust based on your system)
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '2'
+          memory: 4G
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

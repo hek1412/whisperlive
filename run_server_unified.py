@@ -52,7 +52,7 @@ def parse_args():
         '--backend', '-b',
         type=str,
         default='faster_whisper',
-        choices=['faster_whisper'],
+        choices=['faster_whisper', 'tensorrt', 'openvino'],
         help='Transcription backend (default: faster_whisper)'
     )
     parser.add_argument(
@@ -60,6 +60,24 @@ def parse_args():
         type=str,
         default='~/.cache/whisper-live/',
         help='Model cache path (default: ~/.cache/whisper-live/)'
+    )
+
+    # TensorRT specific options
+    parser.add_argument(
+        '--trt-model-path',
+        type=str,
+        default=None,
+        help='Path to TensorRT engine directory (required for tensorrt backend)'
+    )
+    parser.add_argument(
+        '--trt-multilingual',
+        action='store_true',
+        help='Use multilingual TensorRT model'
+    )
+    parser.add_argument(
+        '--trt-py-session',
+        action='store_true',
+        help='Use Python session for TensorRT (default: C++ session)'
     )
 
     # Session management

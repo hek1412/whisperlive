@@ -1,0 +1,71 @@
+services:
+  whisperlive-server-gpu:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.gpu_tensorrt
+    container_name: whisperlive-server-gpu
+    runtime: nvidia
+    ports:
+      - "5206:9090"  # External:Internal port mapping (different from CPU version)
+    environment:
+      # API Authentication
+      - API_KEY=your-secret-api-key-change-in-production
+
+      # GPU Configuration
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+
+      # TensorRT Backend Configuration
+      - TRT_MODEL_PATH=/app/models/whisper_large_v3_float16
+      - TRT_MULTILINGUAL=true
+      - TRT_USE_PYTHON_SESSION=false  # Use C++ session for better performance
+
+      # LLM Configuration for Summarization
+      - OLLAMA_BASE_URL=https://ollama-ui-llm-service.agents.1t.ru/api
+      - OLLAMA_API_KEY=${OLLAMA_API_KEY}
+      - OLLAMA_MODEL=vllm.Qwen3-80B-A3B-Thinking-int4
+
+      # Session Configuration
+      - SESSION_TTL=3600
+      - CLEANUP_INTERVAL=60
+
+      # Debug mode
+      - DEBUG=0
+
+      # Proxy settings (if needed)
+      # - https_proxy=http://proxy.example.com:8080
+
+    volumes:
+      # TensorRT engines storage
+      - ./trt_engines:/app/models
+
+      # Whisper model cache
+      - ./models:/root/.cache/huggingface/hub
+
+      # Prompt configuration
+      - ./prompt.yaml:/app/prompt.yaml:ro
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    restart: unless-stopped
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import threading
+import os
 from typing import Optional
 from queue import Queue
 
@@ -132,17 +133,49 @@ class EnhancedTranscriptionServer:
     their lifecycle separately from WebSocket connections.
     """
 
-    def __init__(self, backend="faster_whisper", cache_path="~/.cache/whisper-live/"):
+    # def __init__(
+    #     self, 
+    #     backend="faster_whisper", 
+    #     cache_path="~/.cache/whisper-live/",
+    #     whisper_tensorrt_path=None,
+    #     trt_multilingual=False,
+    #     trt_py_session=False
+    # ):
+    def __init__(
+        self, 
+        backend="tensorrtr", 
+        cache_path=None,
+        whisper_tensorrt_path="./trt_engines/whisper_large_v3_float16",
+        trt_multilingual=True,
+        trt_py_session=True # если False то Используем C++ сессию для лучшей производительности
+    ):
         """
         Initialize enhanced transcription server.
 
         Args:
-            backend: Backend type (currently only "faster_whisper" supported)
-            cache_path: Path for model cache
+            backend: Backend type ("faster_whisper" or "tensorrt")
+            cache_path: Path for model cache (for faster_whisper)
+            whisper_tensorrt_path: Path to TensorRT model directory (required for tensorrt backend)
+            trt_multilingual: Boolean - True if multilingual TensorRT model (e.g., large-v3)
+            trt_py_session: Boolean - use Python session instead of C++ for TensorRT
         """
         self.backend = backend
         self.cache_path = cache_path
-        logger.info(f"EnhancedTranscriptionServer initialized: backend={backend}")
+        self.whisper_tensorrt_path = whisper_tensorrt_path
+        self.trt_multilingual = trt_multilingual
+        self.trt_py_session = trt_py_session
+        
+        # Validate TensorRT configuration
+        if self.backend == "tensorrt":
+            if whisper_tensorrt_path is None:
+                raise ValueError("whisper_tensorrt_path is required for tensorrt backend")
+            if not os.path.exists(whisper_tensorrt_path):
+                raise ValueError(f"TensorRT model path does not exist: {whisper_tensorrt_path}")
+        
+        logger.info(
+            f"EnhancedTranscriptionServer initialized: backend={backend}, "
+            f"tensorrt_path={whisper_tensorrt_path}, multilingual={trt_multilingual}"
+        )
 
     def create_backend_for_session(
         self,
@@ -159,35 +192,61 @@ class EnhancedTranscriptionServer:
         """
         config = session_data.config
 
-        # For now, only faster_whisper is supported
-        if self.backend != "faster_whisper":
-            raise ValueError(f"Unsupported backend: {self.backend}")
-
-        logger.info(
-            f"Creating faster_whisper backend for session {session_data.session_id}, "
-            f"model={config.model}, language={config.language}"
-        )
-
         # Create mock websocket for message queuing
         mock_websocket = MockWebSocket()
 
-        # Create faster-whisper client with mock websocket
-        client = ServeClientFasterWhisper(
-            websocket=mock_websocket,
-            task=config.task,
-            language=config.language,
-            client_uid=session_data.session_id,
-            model=config.model,
-            use_vad=config.use_vad,
-            send_last_n_segments=config.send_last_n_segments,
-            no_speech_thresh=config.no_speech_thresh,
-            clip_audio=config.clip_audio,
-            same_output_threshold=config.same_output_threshold,
-            cache_path=self.cache_path,
-            single_model=False  # Each session gets its own model instance
-        )
+        if self.backend == "tensorrt":
+            logger.info(
+                f"Creating TensorRT backend for session {session_data.session_id}, "
+                f"model={self.whisper_tensorrt_path}, language={config.language}, "
+                f"multilingual={self.trt_multilingual}"
+            )
+            
+            from whisper_live.trt_backend import ServeClientTensorRT
+            
+            client = ServeClientTensorRT(
+                websocket=mock_websocket,
+                multilingual=self.trt_multilingual,
+                language=config.language,
+                task=config.task,
+                client_uid=session_data.session_id,
+                model=self.whisper_tensorrt_path,
+                use_py_session=self.trt_py_session,
+                send_last_n_segments=config.send_last_n_segments,
+                no_speech_thresh=config.no_speech_thresh,
+                clip_audio=config.clip_audio,
+                same_output_threshold=config.same_output_threshold,
+                single_model=False  # Each session gets its own model instance
+            )
+
+        elif self.backend == "faster_whisper":
+            logger.info(
+                f"Creating faster_whisper backend for session {session_data.session_id}, "
+                f"model={config.model}, language={config.language}"
+            )
+            
+            from whisper_live.faster_whisper_backend import ServeClientFasterWhisper
+            
+            client = ServeClientFasterWhisper(
+                websocket=mock_websocket,
+                task=config.task,
+                language=config.language,
+                client_uid=session_data.session_id,
+                model=config.model,
+                use_vad=config.use_vad,
+                send_last_n_segments=config.send_last_n_segments,
+                no_speech_thresh=config.no_speech_thresh,
+                clip_audio=config.clip_audio,
+                same_output_threshold=config.same_output_threshold,
+                cache_path=self.cache_path,
+                single_model=False
+            )
+        
+        else:
+            raise ValueError(f"Unsupported backend: {self.backend}")
 
         # Wrap client with session backend wrapper
         wrapper = SessionBackendWrapper(client, session_data, mock_websocket)
 
         return wrapper
+

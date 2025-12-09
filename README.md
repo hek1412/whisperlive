@@ -1,7 +1,17 @@
 # WhisperLive Unified Server
 
 Сервер для транскрибации аудио в реальном времени с поддержкой REST API и WebSocket на едином порту.
-
+{
+  "baseUrl": "http://185.246.220.90:5168",
+  "apiKey": "your-secret-api-key-change-in-production",
+  "defaultLanguage": "ru",
+  "defaultModel": "large-v3",
+  "useVAD": true,
+  "streamFormat": "pcm16",
+  "pcmSampleRate": 16000,
+  "pcmChannels": 1,
+  "switchHoldMs": 1200
+}
 ## Возможности
 
 - **Единый порт** для REST API и WebSocket соединений

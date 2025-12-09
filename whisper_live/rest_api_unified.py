@@ -5,6 +5,7 @@ This module provides a FastAPI application that combines REST API endpoints
 for session management with WebSocket support for real-time transcription.
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -12,7 +13,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 import numpy as np
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Depends
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query, Header, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -95,19 +96,31 @@ class SummaryResponse(BaseModel):
 # API Key Dependency
 # ============================================================================
 
-async def verify_api_key(api_key: Optional[str] = Query(None, description="API key")):
+async def verify_api_key(
+    api_key: Optional[str] = Query(None, description="API key"),
+    x_api_key: Optional[str] = Header(None, description="API key in header")
+):
     """
-    Verify API key from query parameter.
+    Verify API key from query parameter or header.
+
+    Priority: query parameter > header
 
     Args:
         api_key: API key from query string
+        x_api_key: API key from X-API-Key header
 
     Raises:
         HTTPException: If API key is invalid
     """
-    if not validate_api_key(api_key):
-        raise HTTPException(status_code=401, detail="Invalid or missing API key")
-    return api_key
+    # Check query parameter first, then header
+    key = api_key or x_api_key
+
+    if not validate_api_key(key):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing API key. Provide via ?api_key=... or X-API-Key header"
+        )
+    return key
 
 
 # ============================================================================
@@ -441,32 +454,102 @@ def create_unified_app(
         await websocket.accept()
         logger.info(f"[WS_CONNECTED] session_id={session_id}, status={session.status.value}")
 
-        # Create backend client for session
+        # Send connection ready message
+        await websocket.send_json({
+            "type": "connection_ready",
+            "message": "WebSocket connected. Loading model, please wait...",
+            "session_id": session_id
+        })
+
+        # Create backend client for session (may take time for large models)
+        backend_wrapper = None
         try:
-            backend_wrapper = transcription_server.create_backend_for_session(session, websocket)
+            logger.info(f"[WS_BACKEND] Creating backend for session {session_id}...")
+            backend_wrapper = transcription_server.create_backend_for_session(session)
             session.client = backend_wrapper
             session_store.update_session(session_id, client=backend_wrapper)
+
+            # Notify client that backend is ready
+            await websocket.send_json({
+                "type": "backend_ready",
+                "message": "Model loaded successfully. Ready to receive audio.",
+                "session_id": session_id
+            })
+            logger.info(f"[WS_BACKEND] Backend ready for session {session_id}")
+
         except Exception as e:
             logger.error(f"[WS_ERROR] Failed to create backend: {e}")
-            await websocket.send_json({"error": str(e)})
+            await websocket.send_json({"type": "error", "error": str(e)})
             await websocket.close()
             return
 
+        # Background task to send transcription segments to client
+        async def send_segments_task():
+            """Continuously check for segments from backend and send to client."""
+            try:
+                while True:
+                    # Check for messages from backend (non-blocking)
+                    message = backend_wrapper.get_message()
+                    if message:
+                        # Backend sends: {"uid": "...", "segments": [...]}
+                        # Transform to client format: one message per segment
+                        segments = message.get("segments", [])
+                        for segment in segments:
+                            client_message = {
+                                "type": "transcription",
+                                "session_id": session_id,
+                                "speaker": segment.get("speaker", "Unknown"),
+                                "text": segment.get("text", ""),
+                                "start": float(segment.get("start", 0.0)),
+                                "end": float(segment.get("end", 0.0)),
+                                "completed": segment.get("completed", False)
+                            }
+                            await websocket.send_json(client_message)
+                            logger.debug(f"[WS_SEND] Sent transcription: text='{client_message['text'][:30]}...', completed={client_message['completed']}")
+                    await asyncio.sleep(0.01)  # 10ms polling interval
+            except Exception as e:
+                logger.error(f"[WS_SENDER_ERROR] {e}")
+
+        # Start background task for sending segments
+        sender_task = asyncio.create_task(send_segments_task())
+
         try:
+            message_count = 0
             while True:
                 # Receive message from client
                 message = await websocket.receive_text()
                 data = json.loads(message)
 
                 message_type = data.get("type")
+                message_count += 1
+
+                # Log every message for debugging
+                logger.debug(f"[WS_MSG] session={session_id}, count={message_count}, type={message_type}, keys={list(data.keys())}")
 
                 if message_type == "audio_chunk":
-                    # Decode base64 audio
-                    audio_b64 = data.get("audio_data")
+                    # Check if backend is ready
+                    if not backend_wrapper:
+                        logger.warning(f"[WS_WARN] Backend not ready yet for session {session_id}")
+                        await websocket.send_json({
+                            "type": "warning",
+                            "message": "Backend not ready yet, please wait..."
+                        })
+                        continue
+
+                    # Decode base64 audio (support both 'audio_data' and 'audio' field names)
+                    audio_b64 = data.get("audio_data") or data.get("audio")
                     speaker = data.get("speaker", "Unknown")
 
+                    # Handle case where audio is a dict (e.g., {"data": "base64_string"})
+                    if isinstance(audio_b64, dict):
+                        audio_b64 = audio_b64.get("data") or audio_b64.get("audio_data")
+
                     if not audio_b64:
-                        logger.warning(f"[WS_WARN] Empty audio data received for session {session_id}")
+                        logger.warning(
+                            f"[WS_WARN] Empty audio data received for session {session_id}. "
+                            f"Message keys: {list(data.keys())}, audio_data: {data.get('audio_data')}, "
+                            f"audio: {data.get('audio')}"
+                        )
                         continue
 
                     # Decode base64 to bytes
@@ -480,6 +563,13 @@ def create_unified_app(
 
                         # Add audio frames to backend
                         backend_wrapper.backend_client.add_frames(audio_np)
+
+                        # Log successful audio processing (every 10th message to avoid spam)
+                        if message_count % 10 == 0:
+                            logger.info(
+                                f"[WS_AUDIO] session={session_id}, processed {message_count} messages, "
+                                f"audio_bytes={len(audio_bytes)}, speaker={speaker}"
+                            )
 
                     except Exception as e:
                         logger.error(f"[WS_ERROR] Error processing audio: {e}")
@@ -497,6 +587,12 @@ def create_unified_app(
         except Exception as e:
             logger.error(f"[WS_ERROR] session_id={session_id}, error={e}")
         finally:
+            # Cancel sender task
+            sender_task.cancel()
+            try:
+                await sender_task
+            except asyncio.CancelledError:
+                pass
             # Update session status
             if session.status == SessionStatus.ACTIVE:
                 session.status = SessionStatus.CLOSING

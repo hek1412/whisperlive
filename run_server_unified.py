@@ -119,12 +119,25 @@ def parse_args():
         help='Number of OpenMP threads (default: 4)'
     )
 
+    # Logging
+    parser.add_argument(
+        '--debug',
+        action='store_true',
+        help='Enable debug logging'
+    )
+
     return parser.parse_args()
 
 
 def main():
     """Main entry point."""
     args = parse_args()
+
+    # Update logging level if debug flag is set (from CLI arg or env var)
+    debug_mode = args.debug or os.environ.get('DEBUG', '0') == '1'
+    if debug_mode:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logger.info("Debug logging enabled")
 
     # Set OpenMP threads
     if "OMP_NUM_THREADS" not in os.environ:

@@ -36,6 +36,7 @@ env/
 
 # Environment variables
 .env
+docker-compose.override.yml
 
 # Model cache
 models/

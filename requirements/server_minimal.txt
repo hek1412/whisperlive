@@ -1,0 +1,18 @@
+# Core transcription engine (CPU-optimized)
+faster-whisper==1.1.0
+
+# Audio processing
+soundfile
+scipy
+av
+numpy<2
+
+# Tokenization
+tokenizers==0.20.3
+sentencepiece
+
+# Acceleration
+numba
+
+# WebSocket support
+websockets

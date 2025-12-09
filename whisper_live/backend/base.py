@@ -94,10 +94,19 @@ class ServeClientBase(object):
                 input_sample = input_bytes.copy()
                 result = self.transcribe_audio(input_sample)
 
-                if result is None or self.language is None:
+                if result is None:
+                    logging.info(f"[SPEECH_TO_TEXT] result is None, skipping (no voice activity)")
                     self.timestamp_offset += duration
-                    time.sleep(0.25)    # wait for voice activity, result is None when no voice activity
+                    time.sleep(0.25)
                     continue
+
+                if self.language is None:
+                    logging.warning(f"[SPEECH_TO_TEXT] language is None, skipping transcription result")
+                    self.timestamp_offset += duration
+                    time.sleep(0.25)
+                    continue
+
+                logging.info(f"[SPEECH_TO_TEXT] Calling handle_transcription_output, language={self.language}")
                 self.handle_transcription_output(result, duration)
 
             except Exception as e:
@@ -242,12 +251,13 @@ class ServeClientBase(object):
             segments (list): A list of transcription segments to be sent to the client.
         """
         try:
-            self.websocket.send(
-                json.dumps({
-                    "uid": self.client_uid,
-                    "segments": segments,
-                })
-            )
+            message = json.dumps({
+                "uid": self.client_uid,
+                "segments": segments,
+            })
+            logging.info(f"[SEND_TO_CLIENT] Calling websocket.send() with {len(segments)} segments, websocket type: {type(self.websocket).__name__}")
+            self.websocket.send(message)
+            logging.info(f"[SEND_TO_CLIENT] Successfully called websocket.send()")
         except Exception as e:
             logging.error(f"[ERROR]: Sending data to client: {e}")
 
@@ -326,14 +336,28 @@ class ServeClientBase(object):
 
         # Process the last segment if its no_speech_prob is acceptable.
         if self.get_segment_no_speech_prob(segments[-1]) <= self.no_speech_thresh:
-            self.current_out += segments[-1].text
+            last_seg = segments[-1]
+            self.current_out += last_seg.text
+
+            # If this is the only segment OR it's clearly completed (high confidence), add to transcript
+            is_completed = len(segments) == 1 or self.get_segment_no_speech_prob(last_seg) < 0.3
+
             with self.lock:
                 last_segment = self.format_segment(
-                    self.timestamp_offset + self.get_segment_start(segments[-1]),
-                    self.timestamp_offset + min(duration, self.get_segment_end(segments[-1])),
+                    self.timestamp_offset + self.get_segment_start(last_seg),
+                    self.timestamp_offset + min(duration, self.get_segment_end(last_seg)),
                     self.current_out,
-                    completed=False
+                    completed=is_completed
                 )
+
+                # Add to transcript if completed
+                if is_completed:
+                    self.transcript.append(last_segment)
+                    if self.translation_queue:
+                        try:
+                            self.translation_queue.put(last_segment.copy(), timeout=0.1)
+                        except queue.Full:
+                            logging.warning("Translation queue is full, skipping segment")
 
         # Handle repeated output logic.
         if self.current_out.strip() == self.prev_out.strip() and self.current_out != '':

@@ -6,15 +6,55 @@ architecture, allowing REST API to create sessions and WebSocket to
 connect to existing sessions.
 """
 
+import asyncio
 import json
 import logging
 import threading
 from typing import Optional
+from queue import Queue
 
 from whisper_live.backend.faster_whisper_backend import ServeClientFasterWhisper
 from whisper_live.session_manager import SessionData, SessionStatus
 
 logger = logging.getLogger(__name__)
+
+
+class MockWebSocket:
+    """
+    Mock WebSocket that stores messages in a queue instead of sending them.
+
+    This allows the backend (running in a thread) to "send" messages synchronously,
+    while the actual FastAPI WebSocket can consume them asynchronously.
+    """
+
+    def __init__(self):
+        self.message_queue = Queue()
+        self.closed = False
+
+    def send(self, data):
+        """Sync send method expected by backend - stores message in queue."""
+        logger.info(f"[MockWebSocket] send() called, closed={self.closed}, data_type={type(data).__name__}, data_len={len(data) if isinstance(data, str) else 'N/A'}")
+
+        if not self.closed:
+            try:
+                message = json.loads(data) if isinstance(data, str) else data
+                self.message_queue.put(message)
+                logger.info(f"[MockWebSocket] Queued message with {len(message.get('segments', []))} segments")
+            except Exception as e:
+                logger.error(f"[MockWebSocket] Error queuing message: {e}", exc_info=True)
+        else:
+            logger.warning(f"[MockWebSocket] send() called but websocket is closed!")
+
+    def get_message(self, timeout=0.1):
+        """Get next message from queue (non-blocking)."""
+        try:
+            return self.message_queue.get(timeout=timeout)
+        except:
+            return None
+
+    def close(self):
+        """Mark as closed."""
+        self.closed = True
 
 
 class SessionBackendWrapper:
@@ -25,16 +65,18 @@ class SessionBackendWrapper:
     updates to store them in the session manager.
     """
 
-    def __init__(self, backend_client, session_data: SessionData):
+    def __init__(self, backend_client, session_data: SessionData, mock_websocket: MockWebSocket):
         """
         Initialize wrapper.
 
         Args:
             backend_client: Original backend client (e.g., ServeClientFasterWhisper)
             session_data: Session data container
+            mock_websocket: MockWebSocket for message queuing
         """
         self.backend_client = backend_client
         self.session_data = session_data
+        self.mock_websocket = mock_websocket
         self.original_send_method = backend_client.send_transcription_to_client
 
         # Replace send method with our interceptor
@@ -52,19 +94,34 @@ class SessionBackendWrapper:
         Args:
             segments: List of transcription segments
         """
+        logger.info(f"[INTERCEPT] Received {len(segments)} segments for session {self.session_data.session_id}")
+
         # Store completed segments in session
+        completed_count = 0
         for segment in segments:
+            logger.debug(f"[INTERCEPT] Segment: completed={segment.get('completed')}, text={segment.get('text', '')[:50]}")
             if segment.get("completed", False):
                 # Add segment to session
                 self.session_data.add_segment(segment.copy())
+                completed_count += 1
 
-        # Call original send method to send via WebSocket
+        logger.info(f"[INTERCEPT] Stored {completed_count} completed segments in session")
+
+        # Call original send method (which now sends to MockWebSocket queue)
         self.original_send_method(segments)
+
+    def get_message(self):
+        """Get next message from mock websocket queue."""
+        return self.mock_websocket.get_message()
 
     def cleanup(self):
         """Cleanup backend resources."""
+        # Stop transcription thread
         if hasattr(self.backend_client, 'cleanup'):
             self.backend_client.cleanup()
+
+        # Don't close MockWebSocket yet - let pending transcription finish
+        # It will be closed automatically when sender_task is cancelled
 
 
 class EnhancedTranscriptionServer:
@@ -89,15 +146,13 @@ class EnhancedTranscriptionServer:
 
     def create_backend_for_session(
         self,
-        session_data: SessionData,
-        websocket
+        session_data: SessionData
     ) -> SessionBackendWrapper:
         """
         Create a backend client for a session.
 
         Args:
             session_data: Session data container
-            websocket: WebSocket connection
 
         Returns:
             SessionBackendWrapper instance
@@ -113,9 +168,12 @@ class EnhancedTranscriptionServer:
             f"model={config.model}, language={config.language}"
         )
 
-        # Create faster-whisper client
+        # Create mock websocket for message queuing
+        mock_websocket = MockWebSocket()
+
+        # Create faster-whisper client with mock websocket
         client = ServeClientFasterWhisper(
-            websocket=websocket,
+            websocket=mock_websocket,
             task=config.task,
             language=config.language,
             client_uid=session_data.session_id,
@@ -130,6 +188,6 @@ class EnhancedTranscriptionServer:
         )
 
         # Wrap client with session backend wrapper
-        wrapper = SessionBackendWrapper(client, session_data)
+        wrapper = SessionBackendWrapper(client, session_data, mock_websocket)
 
         return wrapper

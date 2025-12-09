@@ -19,10 +19,10 @@ mkdir -p models whisper-cache
 
 ```bash
 # Сборка и запуск контейнера
-docker-compose up -d
+docker compose up -d
 
 # Просмотр логов
-docker-compose logs -f
+docker compose logs -f
 ```
 
 ### 3. Проверка работоспособности
@@ -44,7 +44,7 @@ curl -X POST "http://localhost:5168/api/sessions?api_key=your-secret-api-key-cha
   -H "Content-Type: application/json" \
   -d '{
     "language": "ru",
-    "model": "small",
+    "model": "large-v3",
     "task": "transcribe",
     "use_vad": true
   }'
@@ -126,6 +126,14 @@ async def test_websocket():
     uri = f"ws://localhost:5168/ws/transcribe/{session_id}?api_key={api_key}"
 
     async with websockets.connect(uri) as websocket:
+        # Ждем подтверждение подключения
+        ready_msg = await websocket.recv()
+        print(f"Connected: {ready_msg}")
+
+        # Ждем загрузки модели (важно для больших моделей!)
+        backend_ready = await websocket.recv()
+        print(f"Backend ready: {backend_ready}")
+
         # Откройте аудио файл (PCM, 16kHz, mono, int16)
         with wave.open("test_audio.wav", "rb") as wf:
             chunk_size = 1024 * 2  # 2KB chunks
@@ -253,19 +261,51 @@ ollama list
 docker exec whisperlive-server-cpu env | grep OLLAMA
 ```
 
-### 4. Медленная транскрибация
+### 4. WebSocket отключается во время загрузки модели
+
+**Проблема:** При использовании больших моделей (large-v3) загрузка занимает 10-15 секунд, и клиент может отключиться по таймауту.
+
+**Решение:** Клиент должен дождаться двух сообщений от сервера:
+
+1. `{"type": "connection_ready"}` - WebSocket подключен
+2. `{"type": "backend_ready"}` - Модель загружена, можно отправлять аудио
+
+**Пример правильного клиента:**
+```python
+async with websockets.connect(uri) as ws:
+    # 1. Ждем подключения
+    msg1 = await ws.recv()
+    print(json.loads(msg1))  # {"type": "connection_ready", ...}
+
+    # 2. Ждем загрузки модели (может занять 10-15 секунд)
+    msg2 = await ws.recv()
+    print(json.loads(msg2))  # {"type": "backend_ready", ...}
+
+    # 3. Теперь можно отправлять аудио
+    await ws.send(json.dumps({"type": "audio_chunk", ...}))
+```
+
+### 5. Медленная транскрибация
 
 **Решение:** Для CPU inference используйте модели меньшего размера:
 
 ```json
 {
-  "model": "tiny",  // Самая быстрая
-  "model": "base",  // Компромисс
-  "model": "small"  // Хорошее качество
+  "model": "tiny",   // Самая быстрая (39M параметров)
+  "model": "base",   // Компромисс (74M параметров)
+  "model": "small",  // Хорошее качество (244M параметров)
+  "model": "medium", // Очень хорошее качество (769M параметров)
+  "model": "large-v3" // Лучшее качество, но медленно на CPU (1550M параметров)
 }
 ```
 
-### 5. Out of Memory
+**Время загрузки модели на CPU:**
+- tiny/base: ~1-2 секунды
+- small: ~3-5 секунд
+- medium: ~5-8 секунд
+- large-v3: ~10-15 секунд
+
+### 6. Out of Memory
 
 **Решение:** Увеличьте лимиты в `docker-compose.yml`:
 
@@ -287,6 +327,6 @@ FastAPI автоматически генерирует документацию
 
 При возникновении проблем:
 
-1. Проверьте логи: `docker-compose logs -f`
+1. Проверьте логи: `docker compose logs -f`
 2. Проверьте здоровье сервера: `curl http://localhost:5168/health`
 3. Создайте issue в репозитории с логами и описанием проблемы

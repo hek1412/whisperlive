@@ -1,4 +1,5 @@
-FROM python:3.10-slim-bookworm
+# Stage 1: Dependencies layer (cached unless requirements change)
+FROM python:3.10-slim-bookworm AS dependencies
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -16,13 +17,20 @@ RUN pip install --no-cache-dir -U "pip>=24"
 # Create working directory
 WORKDIR /app
 
-# Copy requirements and install dependencies
+# Copy ONLY requirements files (this layer is cached unless requirements change)
 COPY requirements/server.txt /app/requirements_server.txt
+# Станет:
+# COPY requirements/server_minimal.txt /app/requirements_server.txt
 COPY requirements_api.txt /app/
-RUN pip install --no-cache-dir -r requirements_server.txt
-RUN pip install --no-cache-dir -r requirements_api.txt
 
-# Copy application code
+# Install Python dependencies (heavy operation, cached)
+RUN pip install --no-cache-dir -r requirements_server.txt && \
+    pip install --no-cache-dir -r requirements_api.txt
+
+# Stage 2: Application layer (rebuilt on code changes)
+FROM dependencies AS application
+
+# Copy application code (this layer rebuilds on every code change)
 COPY whisper_live /app/whisper_live
 COPY run_server_unified.py /app/
 COPY prompt.yaml /app/

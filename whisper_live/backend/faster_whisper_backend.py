@@ -100,28 +100,17 @@ class ServeClientFasterWhisper(ServeClientBase):
                 self.create_model(device)
         except Exception as e:
             logging.error(f"Failed to load model: {e}")
-            self.websocket.send(json.dumps({
-                "uid": self.client_uid,
-                "status": "ERROR",
-                "message": f"Failed to load model: {str(self.model_size_or_path)}"
-            }))
-            self.websocket.close()
-            return
+            # Note: WebSocket send removed - handled by rest_api_unified.py
+            raise e  # Re-raise to be caught by rest_api_unified.py
 
         self.use_vad = use_vad
 
         # threading
         self.trans_thread = threading.Thread(target=self.speech_to_text)
         self.trans_thread.start()
-        self.websocket.send(
-            json.dumps(
-                {
-                    "uid": self.client_uid,
-                    "message": self.SERVER_READY,
-                    "backend": "faster_whisper"
-                }
-            )
-        )
+
+        # Note: SERVER_READY message removed - now sent by rest_api_unified.py as 'backend_ready'
+        # This prevents RuntimeWarning about unawaited coroutine in FastAPI WebSocket
 
     def create_model(self, device):
         """
@@ -216,6 +205,7 @@ class ServeClientFasterWhisper(ServeClientBase):
 
         if self.language is None and info is not None:
             self.set_language(info)
+
         return result
 
     def handle_transcription_output(self, result, duration):
@@ -226,11 +216,19 @@ class ServeClientFasterWhisper(ServeClientBase):
             result (str): The result from whisper inference i.e. the list of segments.
             duration (float): Duration of the transcribed audio chunk.
         """
+        logging.info(f"[TRANSCRIPTION_OUTPUT] result segments count: {len(list(result))}, duration: {duration:.2f}s")
+
         segments = []
         if len(result):
             self.t_start = None
             last_segment = self.update_segments(result, duration)
             segments = self.prepare_segments(last_segment)
+            logging.info(f"[PREPARED_SEGMENTS] count: {len(segments)}")
+        else:
+            logging.warning(f"[NO_RESULT] Whisper returned empty result for {duration:.2f}s audio")
 
         if len(segments):
+            logging.info(f"[SENDING_SEGMENTS] Sending {len(segments)} segments to client")
             self.send_transcription_to_client(segments)
+        else:
+            logging.warning(f"[NO_SEGMENTS] No segments to send after prepare_segments()")

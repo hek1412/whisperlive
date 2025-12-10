@@ -145,7 +145,7 @@ class EnhancedTranscriptionServer:
         self,
         backend="tensorrt",
         cache_path=None,
-        whisper_tensorrt_path="./trt_engines/whisper_large_v3_int8",
+        whisper_tensorrt_path="./trt_engines/whisper_large_v3_float16",
         trt_multilingual=True,
         trt_py_session=False  # False = C++ сессия (лучшая производительность)
     ):

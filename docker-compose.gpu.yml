@@ -16,7 +16,7 @@ services:
       - CUDA_VISIBLE_DEVICES=0
 
       # TensorRT Backend Configuration
-      - TRT_MODEL_PATH=/app/models/whisper_large_v3_int8
+      - TRT_MODEL_PATH=/app/models/whisper_large_v3_float16
       - TRT_MULTILINGUAL=true
       - TRT_PY_SESSION=false  # Use C++ session for better performance
 

@@ -142,12 +142,12 @@ class EnhancedTranscriptionServer:
     #     trt_py_session=False
     # ):
     def __init__(
-        self, 
-        backend="tensorrtr", 
+        self,
+        backend="tensorrt",
         cache_path=None,
         whisper_tensorrt_path="./trt_engines/whisper_large_v3_float16",
         trt_multilingual=True,
-        trt_py_session=True # если False то Используем C++ сессию для лучшей производительности
+        trt_py_session=True  # если False то Используем C++ сессию для лучшей производительности
     ):
         """
         Initialize enhanced transcription server.
@@ -202,7 +202,7 @@ class EnhancedTranscriptionServer:
                 f"multilingual={self.trt_multilingual}"
             )
             
-            from whisper_live.trt_backend import ServeClientTensorRT
+            from whisper_live.backend.trt_backend import ServeClientTensorRT
             
             client = ServeClientTensorRT(
                 websocket=mock_websocket,
@@ -224,9 +224,7 @@ class EnhancedTranscriptionServer:
                 f"Creating faster_whisper backend for session {session_data.session_id}, "
                 f"model={config.model}, language={config.language}"
             )
-            
-            from whisper_live.faster_whisper_backend import ServeClientFasterWhisper
-            
+
             client = ServeClientFasterWhisper(
                 websocket=mock_websocket,
                 task=config.task,

@@ -18,7 +18,7 @@ services:
       # TensorRT Backend Configuration
       - TRT_MODEL_PATH=/app/models/whisper_large_v3_float16
       - TRT_MULTILINGUAL=true
-      - TRT_USE_PYTHON_SESSION=false  # Use C++ session for better performance
+      - TRT_PY_SESSION=false  # Use C++ session for better performance
 
       # LLM Configuration for Summarization
       - OLLAMA_BASE_URL=https://ollama-ui-llm-service.agents.1t.ru/api

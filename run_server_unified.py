@@ -192,10 +192,33 @@ def main():
 
     # Initialize transcription server
     logger.info(f"Initializing transcription server: backend={args.backend}")
-    transcription_server = EnhancedTranscriptionServer(
-        backend=args.backend,
-        cache_path=args.cache_path
-    )
+
+    # Prepare backend-specific arguments
+    server_kwargs = {
+        "backend": args.backend,
+        "cache_path": args.cache_path
+    }
+
+    # Add TensorRT-specific parameters if using tensorrt backend
+    if args.backend == "tensorrt":
+        trt_model_path = args.trt_model_path or os.getenv("TRT_MODEL_PATH", "./trt_engines/whisper_large_v3_float16")
+        trt_multilingual = args.trt_multilingual or os.getenv("TRT_MULTILINGUAL", "true").lower() == "true"
+        trt_py_session = args.trt_py_session or os.getenv("TRT_PY_SESSION", "false").lower() == "true"
+
+        server_kwargs.update({
+            "whisper_tensorrt_path": trt_model_path,
+            "trt_multilingual": trt_multilingual,
+            "trt_py_session": trt_py_session
+        })
+
+        logger.info(
+            f"TensorRT backend configuration: "
+            f"model_path={trt_model_path}, "
+            f"multilingual={trt_multilingual}, "
+            f"py_session={trt_py_session}"
+        )
+
+    transcription_server = EnhancedTranscriptionServer(**server_kwargs)
 
     # Initialize summarizer (optional)
     summarizer = None

@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y \
     portaudio19-dev \
     ffmpeg \
     build-essential \
+    libopenmpi-dev \
+    openmpi-bin \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -31,6 +33,9 @@ RUN pip install --no-cache-dir \
 
 # Install TensorRT-LLM (version 0.18.2 as per documentation)
 RUN pip install --no-cache-dir tensorrt_llm==0.18.2 -U --extra-index-url https://pypi.nvidia.com
+
+# Fix onnx compatibility issue
+RUN pip install --no-cache-dir --upgrade onnx>=1.15.0
 
 WORKDIR /app
 

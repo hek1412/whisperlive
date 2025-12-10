@@ -38,7 +38,7 @@ services:
     volumes:
       # TensorRT engines storage
       - ./trt_engines:/app/models
-
+      - ./assets:/app/assets
       # Whisper model cache
       - ./models:/root/.cache/huggingface/hub
 

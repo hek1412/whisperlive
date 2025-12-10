@@ -35,7 +35,7 @@ RUN pip install --no-cache-dir \
 RUN pip install --no-cache-dir tensorrt_llm==0.18.2 -U --extra-index-url https://pypi.nvidia.com
 
 # Fix onnx compatibility issue
-RUN pip install --no-cache-dir --upgrade onnx>=1.15.0
+RUN pip install --no-cache-dir --upgrade onnx==1.15.0
 
 WORKDIR /app
 

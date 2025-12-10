@@ -213,3 +213,33 @@ pip install --upgrade onnx>=1.15.0
 Для автоматической сборки при деплое создайте скрипт или используйте multi-stage Dockerfile с предсобранными engines.
 
 **Внимание:** Сборка в CI/CD требует GPU-enabled runner!
+
+ЕСЛИ ИСПОЛЬЗОВАТЬ build_whisper_tensorrt.sh для сборки В контейнере выполните:
+bash /app/scripts/build_whisper_tensorrt.sh large-v3 int8 /app/models
+Или с другими параметрами:
+# Синтаксис:
+bash /app/scripts/build_whisper_tensorrt.sh [MODEL_NAME] [QUANTIZATION] [OUTPUT_DIR]
+
+# Примеры:
+bash /app/scripts/build_whisper_tensorrt.sh large-v3 float16 /app/models
+bash /app/scripts/build_whisper_tensorrt.sh medium int8 /app/models
+bash /app/scripts/build_whisper_tensorrt.sh large-v3 int4 /app/models
+Скрипт автоматически выполнит все 5 шагов: скачивание assets, скачивание модели, конвертацию, сборку encoder и decoder.
+
+
+
+Важные шаги по копированию сборки:
+cd /app/TensorRT-LLM-examples/examples/whisper
+
+# Создайте целевую директорию
+mkdir -p /app/models/whisper_large_v3_int8
+
+# Скопируйте encoder и decoder
+cp -r whisper_large_v3_weights_int8/encoder /app/models/whisper_large_v3_int8/
+cp -r whisper_large_v3_weights_int8/decoder /app/models/whisper_large_v3_int8/
+
+# Также нужно скопировать assets (токенайзер и фильтры)
+cp -r assets /app/
+
+# Проверьте структуру
+ls -lh /app/models/whisper_large_v3_int8/

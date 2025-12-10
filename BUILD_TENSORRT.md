@@ -214,8 +214,11 @@ pip install --upgrade onnx>=1.15.0
 
 **Внимание:** Сборка в CI/CD требует GPU-enabled runner!
 
+
+
+
 ЕСЛИ ИСПОЛЬЗОВАТЬ build_whisper_tensorrt.sh для сборки В контейнере выполните:
-bash /app/scripts/build_whisper_tensorrt.sh large-v3 int8 /app/models
+bash build_whisper_tensorrt.sh large-v3 int8 /app/models
 Или с другими параметрами:
 # Синтаксис:
 bash /app/scripts/build_whisper_tensorrt.sh [MODEL_NAME] [QUANTIZATION] [OUTPUT_DIR]

@@ -73,13 +73,12 @@ fi
 echo "[3/5] Converting checkpoint to TensorRT-LLM format..."
 checkpoint_dir="whisper_${MODEL_NAME//-/_}_weights_${QUANTIZATION}"
 
+# convert_checkpoint.py expects model in assets/ directory
 if [ "$QUANTIZATION" == "float16" ]; then
     python3 convert_checkpoint.py \
-        --model_dir assets/${MODEL_NAME}.pt \
         --output_dir $checkpoint_dir
 else
     python3 convert_checkpoint.py \
-        --model_dir assets/${MODEL_NAME}.pt \
         --use_weight_only \
         --weight_only_precision $QUANTIZATION \
         --output_dir $checkpoint_dir

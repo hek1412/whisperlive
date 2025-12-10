@@ -216,7 +216,7 @@ class EnhancedTranscriptionServer:
                 no_speech_thresh=config.no_speech_thresh,
                 clip_audio=config.clip_audio,
                 same_output_threshold=config.same_output_threshold,
-                single_model=False  # Each session gets its own model instance
+                single_model=True  # Share model between sessions to save GPU memory
             )
 
         elif self.backend == "faster_whisper":

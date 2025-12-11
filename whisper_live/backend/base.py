@@ -54,9 +54,6 @@ class ServeClientBase(object):
         self.end_time_for_same_output = None
         self.translation_queue = translation_queue
 
-        # Speaker tracking for session-based API
-        self.current_speaker = "Unknown"
-
         # threading
         self.lock = threading.Lock()
 
@@ -137,8 +134,7 @@ class ServeClientBase(object):
             'start': "{:.3f}".format(start),
             'end': "{:.3f}".format(end),
             'text': text,
-            'completed': completed,
-            'speaker': getattr(self, 'current_speaker', 'Unknown')
+            'completed': completed
         }
 
     def add_frames(self, frame_np):

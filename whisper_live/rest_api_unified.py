@@ -498,7 +498,6 @@ def create_unified_app(
                             client_message = {
                                 "type": "transcription",
                                 "session_id": session_id,
-                                "speaker": segment.get("speaker", "Unknown"),
                                 "text": segment.get("text", ""),
                                 "start": float(segment.get("start", 0.0)),
                                 "end": float(segment.get("end", 0.0)),
@@ -538,7 +537,6 @@ def create_unified_app(
 
                     # Decode base64 audio (support both 'audio_data' and 'audio' field names)
                     audio_b64 = data.get("audio_data") or data.get("audio")
-                    speaker = data.get("speaker", "Unknown")
 
                     # Handle case where audio is a dict (e.g., {"data": "base64_string"})
                     if isinstance(audio_b64, dict):
@@ -558,9 +556,6 @@ def create_unified_app(
                         # Convert to numpy float32 array
                         audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
-                        # Add speaker info to all segments
-                        backend_wrapper.backend_client.current_speaker = speaker
-
                         # Add audio frames to backend
                         backend_wrapper.backend_client.add_frames(audio_np)
 
@@ -568,7 +563,7 @@ def create_unified_app(
                         if message_count % 10 == 0:
                             logger.info(
                                 f"[WS_AUDIO] session={session_id}, processed {message_count} messages, "
-                                f"audio_bytes={len(audio_bytes)}, speaker={speaker}"
+                                f"audio_bytes={len(audio_bytes)}"
                             )
 
                     except Exception as e:

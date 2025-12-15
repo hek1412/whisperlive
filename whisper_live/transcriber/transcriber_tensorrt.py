@@ -17,7 +17,7 @@ from whisper_live.transcriber.tensorrt_utils import (
 )
 
 import tensorrt_llm
-import tensorrt_llm.logger as logger
+import tensorrt_llm.logger as trt_logger
 from tensorrt_llm._utils import (str_dtype_to_torch, str_dtype_to_trt,
                                  trt_dtype_to_torch)
 from tensorrt_llm.bindings import GptJsonConfig, KVCacheType
@@ -25,6 +25,9 @@ from tensorrt_llm.runtime import PYTHON_BINDINGS, ModelConfig, SamplingConfig
 from tensorrt_llm.runtime.session import Session, TensorInfo
 if PYTHON_BINDINGS:
     from tensorrt_llm.runtime import ModelRunnerCpp
+
+# Suppress TensorRT-LLM warnings
+trt_logger.set_level('error')
 
 SAMPLE_RATE = 16000
 N_FFT = 400

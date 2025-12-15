@@ -130,10 +130,23 @@ class ServeClientTensorRT(ServeClientBase):
                                 of the possibility of word being truncated.
             duration (float): Duration of the transcribed audio chunk.
         """
-        segments = self.prepare_segments({"text": last_segment})
+        # Create properly formatted segment with timestamps and speaker
+        with self.lock:
+            start_time = self.timestamp_offset
+            end_time = self.timestamp_offset + duration
+
+        formatted_segment = self.format_segment(
+            start=start_time,
+            end=end_time,
+            text=last_segment,
+            completed=False
+        )
+
+        segments = self.prepare_segments(formatted_segment)
         self.send_transcription_to_client(segments)
-        if self.eos:
-            self.update_timestamp_offset(last_segment, duration)
+
+        # Always update timestamp_offset to move forward
+        self.update_timestamp_offset(last_segment, duration)
 
     def transcribe_audio(self, input_bytes):
         """

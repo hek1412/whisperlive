@@ -26,6 +26,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Suppress TensorRT-LLM warnings
+logging.getLogger("tensorrt_llm").setLevel(logging.ERROR)
+logging.getLogger("tensorrt").setLevel(logging.ERROR)
+
 
 def parse_args():
     """Parse command line arguments."""

@@ -501,10 +501,16 @@ def create_unified_app(
                                 "text": segment.get("text", ""),
                                 "start": float(segment.get("start", 0.0)),
                                 "end": float(segment.get("end", 0.0)),
-                                "completed": segment.get("completed", False)
+                                "completed": segment.get("completed", False),
+                                "speaker": segment.get("speaker", "Unknown")
                             }
                             await websocket.send_json(client_message)
-                            logger.debug(f"[WS_SEND] Sent transcription: text='{client_message['text'][:30]}...', completed={client_message['completed']}")
+                            # Log outgoing transcription
+                            logger.info(
+                                f"[WS_SENT] session={session_id}, speaker={client_message['speaker']}, "
+                                f"start={client_message['start']}, end={client_message['end']}, "
+                                f"completed={client_message['completed']}, text='{client_message['text'][:50]}...'"
+                            )
                     await asyncio.sleep(0.01)  # 10ms polling interval
             except Exception as e:
                 logger.error(f"[WS_SENDER_ERROR] {e}")
@@ -535,6 +541,16 @@ def create_unified_app(
                         })
                         continue
 
+                    # Extract speaker and timestamp from message
+                    speaker = data.get("speaker", "Unknown")
+                    client_timestamp = data.get("timestamp")
+
+                    # Log incoming message with speaker info
+                    logger.info(
+                        f"[WS_RECEIVED] session={session_id}, type=audio_chunk, speaker={speaker}, "
+                        f"timestamp={client_timestamp}, msg_count={message_count}"
+                    )
+
                     # Decode base64 audio (support both 'audio_data' and 'audio' field names)
                     audio_b64 = data.get("audio_data") or data.get("audio")
 
@@ -556,15 +572,12 @@ def create_unified_app(
                         # Convert to numpy float32 array
                         audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
-                        # Add audio frames to backend
-                        backend_wrapper.backend_client.add_frames(audio_np)
-
-                        # Log successful audio processing (every 10th message to avoid spam)
-                        if message_count % 10 == 0:
-                            logger.info(
-                                f"[WS_AUDIO] session={session_id}, processed {message_count} messages, "
-                                f"audio_bytes={len(audio_bytes)}"
-                            )
+                        # Add audio frames to backend with speaker and timestamp
+                        backend_wrapper.backend_client.add_frames(
+                            audio_np,
+                            speaker=speaker,
+                            client_timestamp=client_timestamp
+                        )
 
                     except Exception as e:
                         logger.error(f"[WS_ERROR] Error processing audio: {e}")

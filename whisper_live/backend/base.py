@@ -54,6 +54,10 @@ class ServeClientBase(object):
         self.end_time_for_same_output = None
         self.translation_queue = translation_queue
 
+        # Speaker timeline tracking
+        # Each entry: {"offset": float, "speaker": str, "client_ts": float}
+        self.speaker_timeline = []
+
         # threading
         self.lock = threading.Lock()
 
@@ -124,20 +128,25 @@ class ServeClientBase(object):
             start (float): The start time of the transcription segment in seconds.
             end (float): The end time of the transcription segment in seconds.
             text (str): The transcribed text corresponding to the segment.
+            completed (bool): Whether the segment is complete.
 
         Returns:
             dict: A dictionary representing the formatted transcription segment, including
-                'start' and 'end' times as strings with three decimal places and the 'text'
-                of the transcription.
+                'start' and 'end' times as strings with three decimal places, the 'text'
+                of the transcription, and the 'speaker' at the start time.
         """
+        # Look up speaker at the start time of this segment
+        speaker = self._get_speaker_at_time(start)
+
         return {
             'start': "{:.3f}".format(start),
             'end': "{:.3f}".format(end),
             'text': text,
-            'completed': completed
+            'completed': completed,
+            'speaker': speaker
         }
 
-    def add_frames(self, frame_np):
+    def add_frames(self, frame_np, speaker=None, client_timestamp=None):
         """
         Add audio frames to the ongoing audio stream buffer.
 
@@ -151,12 +160,42 @@ class ServeClientBase(object):
 
         Args:
             frame_np (numpy.ndarray): The audio frame data as a NumPy array.
+            speaker (str, optional): Speaker identifier for this audio chunk.
+            client_timestamp (float, optional): Client-provided timestamp for this audio chunk.
 
         """
         self.lock.acquire()
+
+        # Calculate current buffer end offset (where this new chunk will be appended)
+        if self.frames_np is not None:
+            current_buffer_end = self.frames_offset + (self.frames_np.shape[0] / self.RATE)
+        else:
+            current_buffer_end = self.frames_offset
+
+        # Track speaker changes in timeline
+        if speaker is not None:
+            # Check if speaker changed from last entry
+            if not self.speaker_timeline or self.speaker_timeline[-1]["speaker"] != speaker:
+                timeline_entry = {
+                    "offset": current_buffer_end,
+                    "speaker": speaker,
+                    "client_ts": client_timestamp if client_timestamp is not None else time.time()
+                }
+                self.speaker_timeline.append(timeline_entry)
+                logging.info(f"[SPEAKER_TIMELINE] Speaker change: {speaker} at offset {current_buffer_end:.3f}s (client_ts={client_timestamp})")
+
         if self.frames_np is not None and self.frames_np.shape[0] > 45*self.RATE:
-            self.frames_offset += 30.0
+            clipped_duration = 30.0
+            self.frames_offset += clipped_duration
             self.frames_np = self.frames_np[int(30*self.RATE):]
+
+            # Clean up speaker timeline entries that are now before frames_offset
+            self.speaker_timeline = [
+                entry for entry in self.speaker_timeline
+                if entry["offset"] >= self.frames_offset
+            ]
+            logging.info(f"[BUFFER_CLIP] Clipped 30s, new frames_offset={self.frames_offset:.3f}s, speaker_timeline entries: {len(self.speaker_timeline)}")
+
             # check timestamp offset(should be >= self.frame_offset)
             # this basically means that there is no speech as timestamp offset hasnt updated
             # and is less than frame_offset
@@ -167,6 +206,29 @@ class ServeClientBase(object):
         else:
             self.frames_np = np.concatenate((self.frames_np, frame_np), axis=0)
         self.lock.release()
+
+    def _get_speaker_at_time(self, offset):
+        """
+        Look up the speaker at a specific buffer offset time.
+
+        Args:
+            offset (float): Buffer offset time in seconds.
+
+        Returns:
+            str: Speaker name at that time, or "Unknown" if no speaker data available.
+        """
+        if not self.speaker_timeline:
+            return "Unknown"
+
+        # Find the most recent speaker change at or before this offset
+        current_speaker = "Unknown"
+        for entry in self.speaker_timeline:
+            if entry["offset"] <= offset:
+                current_speaker = entry["speaker"]
+            else:
+                break  # Timeline is ordered, no need to continue
+
+        return current_speaker
 
     def clip_audio_if_no_valid_segment(self):
         """
@@ -251,9 +313,7 @@ class ServeClientBase(object):
                 "uid": self.client_uid,
                 "segments": segments,
             })
-            logging.info(f"[SEND_TO_CLIENT] Calling websocket.send() with {len(segments)} segments, websocket type: {type(self.websocket).__name__}")
             self.websocket.send(message)
-            logging.info(f"[SEND_TO_CLIENT] Successfully called websocket.send()")
         except Exception as e:
             logging.error(f"[ERROR]: Sending data to client: {e}")
 

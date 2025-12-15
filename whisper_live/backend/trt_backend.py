@@ -142,10 +142,11 @@ class ServeClientTensorRT(ServeClientBase):
             completed=False
         )
 
-        segments = self.prepare_segments(formatted_segment)
-        self.send_transcription_to_client(segments)
+        # Send ONLY the current segment, not old transcript history
+        # TensorRT backend doesn't use segment history like faster-whisper
+        self.send_transcription_to_client([formatted_segment])
 
-        # Always update timestamp_offset to move forward
+        # Update timestamp offset and store in transcript for history
         self.update_timestamp_offset(last_segment, duration)
 
     def transcribe_audio(self, input_bytes):
@@ -210,12 +211,13 @@ class ServeClientTensorRT(ServeClientBase):
             self.clip_audio_if_no_valid_segment()
 
             input_bytes, duration = self.get_audio_chunk_for_processing()
-            if duration < 0.4:
+            # Require minimum 1.5 seconds to avoid hallucinations on short audio
+            if duration < 1.5:
                 continue
 
             try:
                 input_sample = input_bytes.copy()
-                logging.info(f"[WhisperTensorRT:] Processing audio with duration: {duration}")
+                logging.info(f"[WhisperTensorRT:] Processing audio with duration: {duration:.2f}s")
                 self.transcribe_audio(input_sample)
 
             except Exception as e:

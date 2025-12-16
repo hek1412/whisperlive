@@ -30,6 +30,8 @@ from whisper_live.consolidator import TranscriptConsolidator
 from whisper_live.deduplicator import TranscriptDeduplicator
 from whisper_live.rate_limiter import setup_rate_limiter, RateLimitConfig
 
+logger = logging.getLogger(__name__)
+
 # Optional storage imports (graceful degradation if not installed)
 try:
     from whisper_live.storage import RedisSessionStore, MongoDBArchiveStore
@@ -37,8 +39,6 @@ try:
 except ImportError:
     STORAGE_AVAILABLE = False
     logger.warning("Storage modules not available. Redis/MongoDB features disabled.")
-
-logger = logging.getLogger(__name__)
 
 
 # ============================================================================

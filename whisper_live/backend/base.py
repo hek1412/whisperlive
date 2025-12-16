@@ -58,6 +58,13 @@ class ServeClientBase(object):
         # Each entry: {"offset": float, "speaker": str, "client_ts": float}
         self.speaker_timeline = []
 
+        # Accumulation buffer for incoming chunks (prevents overload)
+        self.accumulation_buffer = []
+        self.accumulation_duration = 0.0
+        self.min_accumulation_seconds = 1.5  # Minimum 1.5 seconds before processing
+        self.last_speaker = None
+        self.last_client_timestamp = None
+
         # threading
         self.lock = threading.Lock()
 
@@ -148,15 +155,10 @@ class ServeClientBase(object):
 
     def add_frames(self, frame_np, speaker=None, client_timestamp=None):
         """
-        Add audio frames to the ongoing audio stream buffer.
+        Add audio frames to the ongoing audio stream buffer with accumulation.
 
-        This method is responsible for maintaining the audio stream buffer, allowing the continuous addition
-        of audio frames as they are received. It also ensures that the buffer does not exceed a specified size
-        to prevent excessive memory usage.
-
-        If the buffer size exceeds a threshold (45 seconds of audio data), it discards the oldest 30 seconds
-        of audio data to maintain a reasonable buffer size. If the buffer is empty, it initializes it with the provided
-        audio frame. The audio stream buffer is used for real-time processing of audio data for transcription.
+        This method accumulates incoming audio chunks until reaching minimum duration (1.5s)
+        to prevent server overload from clients sending too frequently (e.g., every 20ms).
 
         Args:
             frame_np (numpy.ndarray): The audio frame data as a NumPy array.
@@ -168,6 +170,29 @@ class ServeClientBase(object):
                   Format: {"event": "speaker_changed", "speaker": str, "offset": float, "client_ts": float}
 
         """
+        # Accumulate chunks until we have enough duration
+        chunk_duration = frame_np.shape[0] / self.RATE
+        self.accumulation_buffer.append(frame_np)
+        self.accumulation_duration += chunk_duration
+
+        # Track speaker and timestamp for the accumulated batch
+        if speaker is not None:
+            self.last_speaker = speaker
+        if client_timestamp is not None:
+            self.last_client_timestamp = client_timestamp
+
+        # Only process when accumulated enough audio
+        if self.accumulation_duration < self.min_accumulation_seconds:
+            return None  # Not enough audio yet, continue accumulating
+
+        # Combine accumulated chunks
+        combined_frame = np.concatenate(self.accumulation_buffer, axis=0)
+
+        # Clear accumulation buffer
+        self.accumulation_buffer = []
+        self.accumulation_duration = 0.0
+
+        # Now process the combined frame
         self.lock.acquire()
         speaker_change_event = None
 
@@ -177,24 +202,24 @@ class ServeClientBase(object):
         else:
             current_buffer_end = self.frames_offset
 
-        # Track speaker changes in timeline
-        if speaker is not None:
+        # Track speaker changes in timeline (use accumulated speaker)
+        if self.last_speaker is not None:
             # Check if speaker changed from last entry
-            if not self.speaker_timeline or self.speaker_timeline[-1]["speaker"] != speaker:
+            if not self.speaker_timeline or self.speaker_timeline[-1]["speaker"] != self.last_speaker:
                 timeline_entry = {
                     "offset": current_buffer_end,
-                    "speaker": speaker,
-                    "client_ts": client_timestamp if client_timestamp is not None else time.time()
+                    "speaker": self.last_speaker,
+                    "client_ts": self.last_client_timestamp if self.last_client_timestamp is not None else time.time()
                 }
                 self.speaker_timeline.append(timeline_entry)
-                logging.info(f"[SPEAKER_TIMELINE] Speaker change: {speaker} at offset {current_buffer_end:.3f}s (client_ts={client_timestamp})")
+                logging.info(f"[SPEAKER_TIMELINE] Speaker change: {self.last_speaker} at offset {current_buffer_end:.3f}s (client_ts={self.last_client_timestamp})")
 
                 # Create speaker change event for WebSocket notification
                 speaker_change_event = {
                     "event": "speaker_changed",
-                    "speaker": speaker,
+                    "speaker": self.last_speaker,
                     "offset": current_buffer_end,
-                    "client_ts": client_timestamp if client_timestamp is not None else time.time()
+                    "client_ts": self.last_client_timestamp if self.last_client_timestamp is not None else time.time()
                 }
 
         if self.frames_np is not None and self.frames_np.shape[0] > 45*self.RATE:
@@ -214,11 +239,16 @@ class ServeClientBase(object):
             # and is less than frame_offset
             if self.timestamp_offset < self.frames_offset:
                 self.timestamp_offset = self.frames_offset
+        # Add combined accumulated frame to buffer
         if self.frames_np is None:
-            self.frames_np = frame_np.copy()
+            self.frames_np = combined_frame.copy()
         else:
-            self.frames_np = np.concatenate((self.frames_np, frame_np), axis=0)
+            self.frames_np = np.concatenate((self.frames_np, combined_frame), axis=0)
+
         self.lock.release()
+
+        # Log accumulated batch
+        logging.info(f"[ACCUMULATION] Processed batch: duration={combined_frame.shape[0] / self.RATE:.2f}s, speaker={self.last_speaker}")
 
         return speaker_change_event
 

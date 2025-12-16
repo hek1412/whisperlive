@@ -17,3 +17,10 @@ pyyaml==6.0.1
 
 # Python utilities
 python-dotenv==1.0.0
+
+# Storage dependencies (optional)
+redis==5.0.1
+pymongo==4.6.1
+
+# Rate limiting
+slowapi==0.1.9

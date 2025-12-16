@@ -163,8 +163,13 @@ class ServeClientBase(object):
             speaker (str, optional): Speaker identifier for this audio chunk.
             client_timestamp (float, optional): Client-provided timestamp for this audio chunk.
 
+        Returns:
+            dict: Speaker change event if speaker changed, None otherwise
+                  Format: {"event": "speaker_changed", "speaker": str, "offset": float, "client_ts": float}
+
         """
         self.lock.acquire()
+        speaker_change_event = None
 
         # Calculate current buffer end offset (where this new chunk will be appended)
         if self.frames_np is not None:
@@ -183,6 +188,14 @@ class ServeClientBase(object):
                 }
                 self.speaker_timeline.append(timeline_entry)
                 logging.info(f"[SPEAKER_TIMELINE] Speaker change: {speaker} at offset {current_buffer_end:.3f}s (client_ts={client_timestamp})")
+
+                # Create speaker change event for WebSocket notification
+                speaker_change_event = {
+                    "event": "speaker_changed",
+                    "speaker": speaker,
+                    "offset": current_buffer_end,
+                    "client_ts": client_timestamp if client_timestamp is not None else time.time()
+                }
 
         if self.frames_np is not None and self.frames_np.shape[0] > 45*self.RATE:
             clipped_duration = 30.0
@@ -206,6 +219,8 @@ class ServeClientBase(object):
         else:
             self.frames_np = np.concatenate((self.frames_np, frame_np), axis=0)
         self.lock.release()
+
+        return speaker_change_event
 
     def _get_speaker_at_time(self, offset):
         """

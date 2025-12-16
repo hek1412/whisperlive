@@ -9,6 +9,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -25,6 +26,17 @@ from whisper_live.session_manager import (
 )
 from whisper_live.server_enhanced import EnhancedTranscriptionServer
 from whisper_live.summarizer import OllamaSummarizer
+from whisper_live.consolidator import TranscriptConsolidator
+from whisper_live.deduplicator import TranscriptDeduplicator
+from whisper_live.rate_limiter import setup_rate_limiter, RateLimitConfig
+
+# Optional storage imports (graceful degradation if not installed)
+try:
+    from whisper_live.storage import RedisSessionStore, MongoDBArchiveStore
+    STORAGE_AVAILABLE = True
+except ImportError:
+    STORAGE_AVAILABLE = False
+    logger.warning("Storage modules not available. Redis/MongoDB features disabled.")
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +144,10 @@ def create_unified_app(
     transcription_server: EnhancedTranscriptionServer,
     summarizer: Optional[OllamaSummarizer] = None,
     host: str = "0.0.0.0",
-    port: int = 9090
+    port: int = 9090,
+    redis_store: Optional[any] = None,
+    mongodb_store: Optional[any] = None,
+    rate_limit_config: Optional[RateLimitConfig] = None
 ) -> FastAPI:
     """
     Create FastAPI application with REST and WebSocket endpoints.
@@ -143,6 +158,9 @@ def create_unified_app(
         summarizer: Optional LLM summarizer
         host: Server host
         port: Server port
+        redis_store: Optional Redis storage for hot data
+        mongodb_store: Optional MongoDB storage for archival
+        rate_limit_config: Optional rate limiting configuration
 
     Returns:
         FastAPI application instance
@@ -159,6 +177,16 @@ def create_unified_app(
     app.state.summarizer = summarizer
     app.state.host = host
     app.state.port = port
+    app.state.redis_store = redis_store
+    app.state.mongodb_store = mongodb_store
+
+    # Setup rate limiting if configured
+    if rate_limit_config and rate_limit_config.enabled:
+        setup_rate_limiter(app, redis_url=rate_limit_config.redis_url, enabled=True)
+        logger.info("[API] Rate limiting enabled")
+    else:
+        app.state.limiter = None
+        logger.info("[API] Rate limiting disabled")
 
     # ========================================================================
     # REST API Endpoints
@@ -573,11 +601,26 @@ def create_unified_app(
                         audio_np = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
                         # Add audio frames to backend with speaker and timestamp
-                        backend_wrapper.backend_client.add_frames(
+                        # Returns speaker change event if speaker changed
+                        speaker_event = backend_wrapper.backend_client.add_frames(
                             audio_np,
                             speaker=speaker,
                             client_timestamp=client_timestamp
                         )
+
+                        # Send speaker change notification if speaker changed
+                        if speaker_event:
+                            await websocket.send_json({
+                                "type": "speaker_changed",
+                                "session_id": session_id,
+                                "speaker": speaker_event["speaker"],
+                                "offset": speaker_event["offset"],
+                                "timestamp": speaker_event["client_ts"]
+                            })
+                            logger.info(
+                                f"[WS_SPEAKER_CHANGED] session={session_id}, speaker={speaker_event['speaker']}, "
+                                f"offset={speaker_event['offset']:.3f}s"
+                            )
 
                     except Exception as e:
                         logger.error(f"[WS_ERROR] Error processing audio: {e}")

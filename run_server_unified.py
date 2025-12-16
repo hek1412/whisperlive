@@ -17,6 +17,15 @@ from whisper_live.session_manager import SessionStore, set_api_keys
 from whisper_live.server_enhanced import EnhancedTranscriptionServer
 from whisper_live.summarizer import OllamaSummarizer
 from whisper_live.rest_api_unified import create_unified_app
+from whisper_live.rate_limiter import RateLimitConfig
+
+# Optional storage imports
+try:
+    from whisper_live.storage import RedisSessionStore, MongoDBArchiveStore
+    STORAGE_AVAILABLE = True
+except ImportError:
+    STORAGE_AVAILABLE = False
+    logger.warning("Storage modules not available. Install redis and pymongo packages to enable storage features.")
 
 # Configure logging
 logging.basicConfig(
@@ -244,6 +253,52 @@ def main():
     except Exception as e:
         logger.warning(f"Failed to initialize summarizer: {e}. Summarization will be unavailable.")
 
+    # Initialize storage layers (optional)
+    redis_store = None
+    mongodb_store = None
+    enable_storage = os.getenv("ENABLE_STORAGE", "false").lower() == "true"
+
+    if STORAGE_AVAILABLE and enable_storage:
+        try:
+            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+            logger.info(f"Initializing Redis storage: {redis_url}")
+            redis_store = RedisSessionStore(
+                redis_url=redis_url,
+                default_ttl=args.session_ttl
+            )
+        except Exception as e:
+            logger.warning(f"Failed to initialize Redis storage: {e}")
+
+        try:
+            mongodb_url = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
+            mongodb_database = os.getenv("MONGODB_DATABASE", "whisperlive")
+            logger.info(f"Initializing MongoDB storage: {mongodb_url}/{mongodb_database}")
+            mongodb_store = MongoDBArchiveStore(
+                mongodb_url=mongodb_url,
+                database_name=mongodb_database
+            )
+        except Exception as e:
+            logger.warning(f"Failed to initialize MongoDB storage: {e}")
+    else:
+        if not STORAGE_AVAILABLE:
+            logger.info("Storage packages not installed. Storage features disabled.")
+        else:
+            logger.info("Storage disabled via ENABLE_STORAGE=false")
+
+    # Initialize rate limiting configuration
+    rate_limit_config = None
+    enable_rate_limit = os.getenv("ENABLE_RATE_LIMIT", "false").lower() == "true"
+
+    if enable_rate_limit:
+        rate_limit_redis_url = os.getenv("RATE_LIMIT_REDIS_URL", os.getenv("REDIS_URL", "redis://localhost:6379/1"))
+        logger.info(f"Rate limiting enabled with Redis: {rate_limit_redis_url}")
+        rate_limit_config = RateLimitConfig(
+            redis_url=rate_limit_redis_url,
+            enabled=True
+        )
+    else:
+        logger.info("Rate limiting disabled")
+
     # Create FastAPI app
     logger.info("Creating FastAPI application")
     app = create_unified_app(
@@ -251,7 +306,10 @@ def main():
         transcription_server=transcription_server,
         summarizer=summarizer,
         host=args.host,
-        port=args.port
+        port=args.port,
+        redis_store=redis_store,
+        mongodb_store=mongodb_store,
+        rate_limit_config=rate_limit_config
     )
 
     # Start server
@@ -271,6 +329,20 @@ def main():
     finally:
         # Cleanup
         session_store.stop_cleanup_task()
+
+        # Close storage connections
+        if redis_store:
+            try:
+                redis_store.close()
+            except Exception as e:
+                logger.error(f"Error closing Redis store: {e}")
+
+        if mongodb_store:
+            try:
+                mongodb_store.close()
+            except Exception as e:
+                logger.error(f"Error closing MongoDB store: {e}")
+
         logger.info("Server stopped")
 
 

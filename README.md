@@ -1,23 +1,14 @@
 # WhisperLive Unified Server
 
 Сервер для транскрибации аудио в реальном времени с поддержкой REST API и WebSocket на едином порту.
-{
-  "baseUrl": "http://185.246.220.90:5168",
-  "apiKey": "your-secret-api-key-change-in-production",
-  "defaultLanguage": "ru",
-  "defaultModel": "large-v3",
-  "useVAD": true,
-  "streamFormat": "pcm16",
-  "pcmSampleRate": 16000,
-  "pcmChannels": 1,
-  "switchHoldMs": 1200
-}
+
 ## Возможности
 
 - **Единый порт** для REST API и WebSocket соединений
 - **Управление сессиями** через REST API
 - **Потоковая транскрибация** аудио через WebSocket
-- **Определение спикеров** с использованием pyannote
+- **Timeline-based Speaker Tracking** - отслеживание спикеров по временным меткам
+- **TensorRT Backend Support** - оптимизированный бэкенд с GPU ускорением
 - **GPU ускорение** с поддержкой CUDA
 - **Аутентификация** через API ключи
 - **Консолидация транскриптов** с удалением дубликатов и группировкой по спикерам
@@ -78,11 +69,40 @@ curl -X POST "http://localhost:5168/api/sessions?api_key=your-secret-api-key-cha
 {
   "type": "audio_chunk",
   "audio_data": "base64_encoded_pcm_audio",
-  "speaker": "Спикер1"
+  "speaker": "Виталий Александров#29a941be",
+  "timestamp": 1765834387.409
 }
 ```
 
-Формат аудио: PCM, 16 kHz, mono, int16
+**Формат аудио**: PCM, 16 kHz, mono, int16
+
+**Поля сообщения:**
+- `type` - тип сообщения (всегда `"audio_chunk"`)
+- `audio_data` - base64-кодированное PCM аудио (int16, 16kHz, mono)
+- `speaker` - идентификатор спикера (опционально, по умолчанию "Unknown")
+- `timestamp` - клиентская временная метка Unix timestamp (опционально)
+
+**Ответ от сервера:**
+```json
+{
+  "type": "transcription",
+  "session_id": "550e8400-e29b-41d4-a716-446655440000",
+  "speaker": "Виталий Александров#29a941be",
+  "text": "Привет, как дела?",
+  "start": "0.000",
+  "end": "2.340",
+  "completed": false
+}
+```
+
+**Поля ответа:**
+- `type` - тип сообщения (всегда `"transcription"`)
+- `session_id` - ID сессии
+- `speaker` - спикер для данного сегмента (определяется через speaker timeline)
+- `text` - распознанный текст
+- `start` - время начала сегмента (в секундах от начала буфера)
+- `end` - время окончания сегмента
+- `completed` - завершен ли сегмент (false для промежуточных результатов)
 
 ### Получение транскрипта
 
@@ -237,9 +257,8 @@ curl -X DELETE "http://localhost:5168/api/sessions/{session_id}?api_key=your-sec
 python3 run_server_unified.py \
   --host 0.0.0.0 \
   --port 9090 \
-  --backend faster_whisper \
-  --max_clients 10 \
-  --max_connection_time 6000 \
+  --backend tensorrt \
+  --trt-model-path ./trt_engines/whisper_large_v3_float16 \
   --session_ttl 3600 \
   --cleanup_interval 60
 ```
@@ -248,11 +267,19 @@ python3 run_server_unified.py \
 - `--host` - хост сервера (по умолчанию: 0.0.0.0)
 - `--port` - порт сервера (по умолчанию: 9090)
 - `--backend` - бэкенд транскрибации: faster_whisper, tensorrt, openvino
-- `--max_clients` - максимальное количество одновременных клиентов
-- `--max_connection_time` - максимальное время соединения в секундах
 - `--session_ttl` - время жизни сессии в секундах
 - `--cleanup_interval` - интервал очистки сессий в секундах
 - `--api-keys` - список API ключей (можно указать несколько)
+
+**TensorRT-специфичные параметры:**
+- `--trt-model-path` - путь к директории с TensorRT engine (обязательно для tensorrt backend)
+- `--trt-multilingual` - использовать мультиязычную модель (по умолчанию: true)
+- `--trt-py-session` - использовать Python session вместо C++ (по умолчанию: false)
+
+**Переменные окружения:**
+- `TRT_MODEL_PATH` - путь к TensorRT engine (альтернатива `--trt-model-path`)
+- `TRT_MULTILINGUAL` - использовать мультиязычную модель (true/false)
+- `TRT_PY_SESSION` - использовать Python session (true/false)
 
 
 ### Настройка Ollama для суммаризации
@@ -360,6 +387,80 @@ OLLAMA_MODEL=vllm.Qwen3-VL-32B-Instruct-AWQ
 2025-01-13 10:32:45 [INFO] rest_api_unified: [TRANSCRIPT] session_id=..., total=87, completed=45, blocks=12
 ```
 
+## Timeline-based Speaker Tracking (ветка tensorrt-speaker)
+
+### Принцип работы
+
+Вместо традиционного определения спикеров через pyannote, используется **timeline-based подход**:
+
+1. **Клиент отправляет speaker ID** вместе с каждым аудио чанком
+2. **Сервер создает speaker timeline** - временную шкалу с метками смены спикера
+3. **При форматировании сегментов** сервер определяет спикера по времени начала сегмента
+
+### Структура Speaker Timeline
+
+```python
+speaker_timeline = [
+    {"offset": 0.0, "speaker": "Виталий Александров#29a941be", "client_ts": 1765834387.409},
+    {"offset": 5.23, "speaker": "Организация#42c9aa97", "client_ts": 1765834392.639},
+    {"offset": 12.45, "speaker": "Виталий Александров#29a941be", "client_ts": 1765834399.859}
+]
+```
+
+- `offset` - время в буфере (секунды от начала)
+- `speaker` - идентификатор спикера
+- `client_ts` - клиентская временная метка (для синхронизации)
+
+### Логика работы
+
+1. **При получении audio_chunk**:
+   - Вычисляется `current_buffer_end` (конец текущего буфера)
+   - Если спикер изменился, добавляется запись в timeline
+   - Аудио добавляется в буфер
+
+2. **При транскрибации**:
+   - Whisper обрабатывает аудио и возвращает текст
+   - Создается сегмент с временными метками `start` и `end`
+   - Вызывается `_get_speaker_at_time(start)` для определения спикера
+
+3. **Очистка timeline**:
+   - При клиппировании буфера (> 45 секунд) удаляются старые записи
+   - Timeline хранит только актуальные данные
+
+### Преимущества
+
+✅ **Нет зависимости от pyannote** - не требуется GPU модель для speaker diarization
+✅ **Точное определение спикера** - клиент точно знает кто говорит
+✅ **Низкая задержка** - нет дополнительной обработки на сервере
+✅ **Работает с TensorRT** - оптимизированный бэкенд без speaker diarization
+
+### Ограничения
+
+⚠️ **Клиент должен знать спикера** - требуется логика определения спикера на стороне клиента
+⚠️ **Чувствительность к галлюцинациям** - если клиент отправляет тишину, Whisper может галлюцинировать
+⚠️ **Рекомендуется VAD на клиенте** - фильтровать тишину перед отправкой на сервер
+
+### Рекомендации для клиентов
+
+1. **Используйте VAD (Voice Activity Detection)**:
+   ```python
+   # Не отправляйте аудио когда нет речи
+   if vad_detector.is_speech(audio_chunk):
+       send_to_server(audio_chunk, speaker, timestamp)
+   ```
+
+2. **Накапливайте чанки**:
+   ```python
+   # Отправляйте минимум 1.5 секунды аудио
+   if buffer_duration >= 1.5:
+       send_to_server(buffer, speaker, timestamp)
+       buffer.clear()
+   ```
+
+3. **Частота отправки**:
+   - ❌ Плохо: каждые 20ms (72 чанка/сек) - перегрузка сервера
+   - ✅ Хорошо: каждые 1-2 секунды - оптимальная задержка
+
 ## Консолидация транскриптов
 
 Система автоматически консолидирует транскрипты:
@@ -368,5 +469,35 @@ OLLAMA_MODEL=vllm.Qwen3-VL-32B-Instruct-AWQ
 - **Группировка по спикерам** с разделением блоков при смене спикера
 - **Разделение по паузам** (пауза > 3 секунд создает новый блок)
 - **Ограничение длины** (блок > 30 секунд автоматически разделяется)
+
+## TensorRT Backend (ветка tensorrt-speaker)
+
+### Особенности
+
+- **Минимальная длина чанка**: 1.5 секунды (предотвращает галлюцинации на коротких фрагментах)
+- **Нет истории сегментов**: отправляется только текущий сегмент, не последние N
+- **Speaker timeline**: автоматическое определение спикера по временным меткам
+- **Оптимизация**: TensorRT-LLM для максимальной производительности
+
+### Проблема галлюцинаций
+
+Если клиент отправляет **тишину**, Whisper может галлюцинировать:
+
+```
+"Продолжение следует..."
+"Субтитры создавал DimaTorzok"
+"1, 2, 3, 4, 5..."
+```
+
+**Решение**: используйте VAD на клиенте для фильтрации тишины.
+
+### Логирование
+
+```
+[WS_RECEIVED] session=..., type=audio_chunk, speaker=Виталий#123, timestamp=..., msg_count=42
+[SPEAKER_TIMELINE] Speaker change: Виталий#123 at offset 12.340s (client_ts=1765834387.409)
+[WhisperTensorRT:] Processing audio with duration: 1.50s
+[WS_SENT] session=..., speaker=Виталий#123, start=12.340, end=13.840, completed=False, text='Привет...'
+```
 
 

@@ -19,14 +19,6 @@ from whisper_live.summarizer import OllamaSummarizer
 from whisper_live.rest_api_unified import create_unified_app
 from whisper_live.rate_limiter import RateLimitConfig
 
-# Optional storage imports
-try:
-    from whisper_live.storage import RedisSessionStore, MongoDBArchiveStore
-    STORAGE_AVAILABLE = True
-except ImportError:
-    STORAGE_AVAILABLE = False
-    logger.warning("Storage modules not available. Install redis and pymongo packages to enable storage features.")
-
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -34,6 +26,14 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 logger = logging.getLogger(__name__)
+
+# Optional storage imports
+try:
+    from whisper_live.storage import RedisSessionStore, MongoDBArchiveStore
+    STORAGE_AVAILABLE = True
+except ImportError:
+    STORAGE_AVAILABLE = False
+    logger.warning("Storage modules not available. Install redis and pymongo packages to enable storage features.")
 
 # Suppress TensorRT-LLM warnings
 logging.getLogger("tensorrt_llm").setLevel(logging.ERROR)

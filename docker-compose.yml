@@ -2,11 +2,21 @@ services:
   whisperlive-server:
     build:
       context: .
-      dockerfile: docker/Dockerfile.cpu_unified
-    container_name: whisperlive-server-cpu
+      dockerfile: docker/Dockerfile.gpu_tensorrt
+    container_name: whisperlive-server-gpu
+    runtime: nvidia
     ports:
-      - "5168:9090"  # External:Internal port mapping
+      - "5206:9090"  # External:Internal port mapping
     environment:
+      # GPU Configuration
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+
+      # TensorRT Backend Configuration
+      - TRT_MODEL_PATH=/app/models/whisper_large_v3_float16
+      - TRT_MULTILINGUAL=true
+      - TRT_PY_SESSION=false  # Use C++ session for better performance
+
       # API Authentication
       - API_KEY=your-secret-api-key-change-in-production
 
@@ -48,11 +58,13 @@ services:
       # - no_proxy=localhost,127.0.0.1
 
     volumes:
-      # Cache Whisper models to avoid re-downloading
+      # TensorRT engines storage
+      - ./trt_engines:/app/models
+      - ./assets:/app/assets
+      # Whisper model cache
       - ./models:/root/.cache/huggingface/hub
-      - ./whisper-cache:/root/.cache/whisper-live
 
-      # Optional: mount custom prompt configuration
+      # Prompt configuration
       - ./prompt.yaml:/app/prompt.yaml:ro
 
     depends_on:
@@ -66,12 +78,11 @@ services:
     # Resource limits (adjust based on your system)
     deploy:
       resources:
-        limits:
-          cpus: '4'
-          memory: 8G
         reservations:
-          cpus: '2'
-          memory: 4G
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
     # Health check
     healthcheck:
@@ -79,7 +90,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
+      start_period: 60s
 
     # Logging configuration
     logging:

@@ -61,9 +61,14 @@ class ServeClientBase(object):
         # Accumulation buffer for incoming chunks (prevents overload)
         self.accumulation_buffer = []
         self.accumulation_duration = 0.0
-        self.min_accumulation_seconds = 1.5  # Minimum 1.5 seconds before processing
+        self.min_accumulation_seconds = 0.5  # Accept 0.5s chunks from client
         self.last_speaker = None
         self.last_client_timestamp = None
+
+        # Output consolidation: merge consecutive segments from same speaker
+        self.pending_segment = None  # {"text": str, "start": float, "end": float, "speaker": str}
+        self.max_pending_duration = 30.0  # Max duration before forcing output (seconds)
+        self.max_pause_to_merge = 2.0  # Max pause between segments to merge (seconds)
 
         # threading
         self.lock = threading.Lock()
@@ -152,6 +157,92 @@ class ServeClientBase(object):
             'completed': completed,
             'speaker': speaker
         }
+
+    def consolidate_segment(self, segment):
+        """
+        Consolidate segments from the same speaker before sending.
+
+        Merges consecutive segments from same speaker if:
+        - Speaker is the same
+        - Pause between segments < max_pause_to_merge (2.0s)
+        - Total duration < max_pending_duration (30.0s)
+
+        Args:
+            segment (dict): New segment with start, end, text, speaker
+
+        Returns:
+            dict or None: Consolidated segment ready to send, or None if still accumulating
+        """
+        if segment is None:
+            return None
+
+        current_speaker = segment.get('speaker')
+        current_start = float(segment.get('start', 0))
+        current_end = float(segment.get('end', 0))
+        current_text = segment.get('text', '').strip()
+
+        # Skip empty text
+        if not current_text:
+            return None
+
+        # First segment or no pending segment
+        if self.pending_segment is None:
+            self.pending_segment = {
+                'start': current_start,
+                'end': current_end,
+                'text': current_text,
+                'speaker': current_speaker,
+                'completed': segment.get('completed', False)
+            }
+            logging.debug(f"[CONSOLIDATE] Started pending: speaker={current_speaker}, text='{current_text[:30]}'")
+            return None  # Continue accumulating
+
+        pending_speaker = self.pending_segment['speaker']
+        pending_end = self.pending_segment['end']
+        pending_start = self.pending_segment['start']
+
+        # Calculate pause and duration
+        pause = current_start - pending_end
+        total_duration = current_end - pending_start
+
+        # Check if we should merge or output
+        should_merge = (
+            current_speaker == pending_speaker and
+            pause <= self.max_pause_to_merge and
+            total_duration <= self.max_pending_duration
+        )
+
+        if should_merge:
+            # Merge into pending segment
+            self.pending_segment['end'] = current_end
+            self.pending_segment['text'] += ' ' + current_text
+            self.pending_segment['completed'] = segment.get('completed', False)
+            logging.debug(f"[CONSOLIDATE] Merged: total_duration={total_duration:.2f}s, pause={pause:.2f}s")
+            return None  # Continue accumulating
+        else:
+            # Output pending segment and start new one
+            output_segment = self.pending_segment.copy()
+            self.pending_segment = {
+                'start': current_start,
+                'end': current_end,
+                'text': current_text,
+                'speaker': current_speaker,
+                'completed': segment.get('completed', False)
+            }
+
+            reason = "speaker_change" if current_speaker != pending_speaker else "pause" if pause > self.max_pause_to_merge else "duration"
+            logging.info(f"[CONSOLIDATE] Output: speaker={output_segment['speaker']}, duration={output_segment['end']-output_segment['start']:.2f}s, reason={reason}")
+
+            return output_segment
+
+    def flush_pending_segment(self):
+        """Force output of pending segment (e.g., on session close)."""
+        if self.pending_segment is not None:
+            output = self.pending_segment.copy()
+            self.pending_segment = None
+            logging.info(f"[CONSOLIDATE] Flushed pending: speaker={output['speaker']}, duration={output['end']-output['start']:.2f}s")
+            return output
+        return None
 
     def add_frames(self, frame_np, speaker=None, client_timestamp=None):
         """

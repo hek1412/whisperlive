@@ -142,9 +142,12 @@ class ServeClientTensorRT(ServeClientBase):
             completed=False
         )
 
-        # Send ONLY the current segment, not old transcript history
-        # TensorRT backend doesn't use segment history like faster-whisper
-        self.send_transcription_to_client([formatted_segment])
+        # Consolidate segment (merge same speaker)
+        consolidated = self.consolidate_segment(formatted_segment)
+
+        # Send consolidated segment if ready (not None)
+        if consolidated is not None:
+            self.send_transcription_to_client([consolidated])
 
         # Update timestamp offset and store in transcript for history
         self.update_timestamp_offset(last_segment, duration)

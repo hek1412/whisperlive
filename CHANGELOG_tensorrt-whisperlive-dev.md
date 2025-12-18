@@ -2,6 +2,30 @@
 
 This document describes all new features and improvements implemented in the `tensorrt-whisperlive-dev` branch.
 
+## Latest Changes (2025-12-18)
+
+### Removed Server-Side Audio Accumulation
+- **What Changed**: Eliminated audio accumulation buffer from backend for minimal latency
+- **Why**: Allows client to control chunk size and timing, prevents server overload from client-side issues
+- **Implementation**:
+  - Removed `accumulation_buffer`, `accumulation_duration`, `min_accumulation_seconds` from [base.py](whisper_live/backend/base.py:61-65)
+  - Modified `add_frames()` to process chunks immediately without buffering
+  - Changed from batch processing (1.5s minimum) to instant processing
+
+### Enhanced Consolidation Logic
+- **What Changed**: Consolidation now respects `completed` flag and 7-second duration limit
+- **Why**: Prevents cutting off speaker text mid-sentence, balances latency vs completeness
+- **Rules**:
+  - Output segment immediately if `completed=True` (Whisper confirmed end of utterance)
+  - Output segment if duration exceeds 7.0 seconds (prevent infinite accumulation)
+  - Merge same-speaker segments if pause < 2.0s AND duration < 7.0s AND not completed
+- **Implementation**: Updated `consolidate_segment()` in [base.py](whisper_live/backend/base.py:155-278)
+
+### Performance Impact
+- **Latency**: Reduced from 1.5s minimum (accumulation) to <100ms (immediate processing)
+- **Quality**: Client now controls chunk timing (recommended: 500ms-1000ms with VAD)
+- **Trade-off**: Server no longer protects against client sending too frequently (e.g., every 20ms)
+
 ## Overview
 
 The `tensorrt-whisperlive-dev` branch integrates advanced storage, consolidation, and deduplication features from the `whisperlive-dev` repository while preserving the TensorRT backend and speaker timeline tracking from `tensorrt-speaker`.

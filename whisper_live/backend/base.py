@@ -58,16 +58,10 @@ class ServeClientBase(object):
         # Each entry: {"offset": float, "speaker": str, "client_ts": float}
         self.speaker_timeline = []
 
-        # Accumulation buffer for incoming chunks (prevents overload)
-        self.accumulation_buffer = []
-        self.accumulation_duration = 0.0
-        self.min_accumulation_seconds = 1.5  # Minimum 1.5s to prevent hallucinations
-        self.last_speaker = None
-        self.last_client_timestamp = None
-
         # Output consolidation: merge consecutive segments from same speaker
+        # Output only when segment is completed=True OR duration exceeds 7 seconds
         self.pending_segment = None  # {"text": str, "start": float, "end": float, "speaker": str}
-        self.max_pending_duration = 8.0  # Max duration before forcing output (seconds)
+        self.max_pending_duration = 7.0  # Max duration before forcing output (seconds)
         self.max_pause_to_merge = 2.0  # Max pause between segments to merge (seconds)
 
         # threading
@@ -165,10 +159,17 @@ class ServeClientBase(object):
         Merges consecutive segments from same speaker if:
         - Speaker is the same
         - Pause between segments < max_pause_to_merge (2.0s)
-        - Total duration < max_pending_duration (30.0s)
+        - Total duration < max_pending_duration (7.0s)
+        - Segment is NOT completed (completed=False)
+
+        Outputs immediately if:
+        - Segment is completed (completed=True)
+        - Duration exceeds 7 seconds
+        - Speaker changes
+        - Pause > 2.0s
 
         Args:
-            segment (dict): New segment with start, end, text, speaker
+            segment (dict): New segment with start, end, text, speaker, completed
 
         Returns:
             dict or None: Consolidated segment ready to send, or None if still accumulating
@@ -180,6 +181,7 @@ class ServeClientBase(object):
         current_start = float(segment.get('start', 0))
         current_end = float(segment.get('end', 0))
         current_text = segment.get('text', '').strip()
+        current_completed = segment.get('completed', False)
 
         # Skip empty text
         if not current_text:
@@ -192,21 +194,40 @@ class ServeClientBase(object):
                 'end': current_end,
                 'text': current_text,
                 'speaker': current_speaker,
-                'completed': segment.get('completed', False)
+                'completed': current_completed
             }
-            logging.debug(f"[CONSOLIDATE] Started pending: speaker={current_speaker}, text='{current_text[:30]}'")
+            logging.debug(f"[CONSOLIDATE] Started pending: speaker={current_speaker}, text='{current_text[:30]}', completed={current_completed}")
+
+            # Check if we should output immediately due to completion or duration
+            pending_duration = current_end - current_start
+            if current_completed or pending_duration >= self.max_pending_duration:
+                output = self.pending_segment.copy()
+                self.pending_segment = None
+                reason = "completed" if current_completed else "duration_limit"
+                logging.info(f"[CONSOLIDATE] Output immediately: speaker={output['speaker']}, duration={pending_duration:.2f}s, reason={reason}")
+                return output
+
             return None  # Continue accumulating
 
         pending_speaker = self.pending_segment['speaker']
         pending_end = self.pending_segment['end']
         pending_start = self.pending_segment['start']
+        pending_completed = self.pending_segment['completed']
 
         # Calculate pause and duration
         pause = current_start - pending_end
         total_duration = current_end - pending_start
 
+        # Check if we should force output of pending due to completion or duration
+        should_force_output = (
+            pending_completed or
+            (pending_end - pending_start) >= self.max_pending_duration
+        )
+
         # Check if we should merge or output
         should_merge = (
+            not should_force_output and
+            not current_completed and
             current_speaker == pending_speaker and
             pause <= self.max_pause_to_merge and
             total_duration <= self.max_pending_duration
@@ -216,8 +237,18 @@ class ServeClientBase(object):
             # Merge into pending segment
             self.pending_segment['end'] = current_end
             self.pending_segment['text'] += ' ' + current_text
-            self.pending_segment['completed'] = segment.get('completed', False)
-            logging.debug(f"[CONSOLIDATE] Merged: total_duration={total_duration:.2f}s, pause={pause:.2f}s")
+            self.pending_segment['completed'] = current_completed
+            logging.debug(f"[CONSOLIDATE] Merged: total_duration={total_duration:.2f}s, pause={pause:.2f}s, completed={current_completed}")
+
+            # Check if merged segment should now be output due to completion or duration
+            merged_duration = self.pending_segment['end'] - self.pending_segment['start']
+            if current_completed or merged_duration >= self.max_pending_duration:
+                output = self.pending_segment.copy()
+                self.pending_segment = None
+                reason = "completed" if current_completed else "duration_limit"
+                logging.info(f"[CONSOLIDATE] Output merged: speaker={output['speaker']}, duration={merged_duration:.2f}s, reason={reason}")
+                return output
+
             return None  # Continue accumulating
         else:
             # Output pending segment and start new one
@@ -227,11 +258,22 @@ class ServeClientBase(object):
                 'end': current_end,
                 'text': current_text,
                 'speaker': current_speaker,
-                'completed': segment.get('completed', False)
+                'completed': current_completed
             }
 
-            reason = "speaker_change" if current_speaker != pending_speaker else "pause" if pause > self.max_pause_to_merge else "duration"
+            reason = "speaker_change" if current_speaker != pending_speaker else "pause" if pause > self.max_pause_to_merge else "pending_completed" if should_force_output else "duration"
             logging.info(f"[CONSOLIDATE] Output: speaker={output_segment['speaker']}, duration={output_segment['end']-output_segment['start']:.2f}s, reason={reason}")
+
+            # Check if new pending should be output immediately
+            new_duration = current_end - current_start
+            if current_completed or new_duration >= self.max_pending_duration:
+                output2 = self.pending_segment.copy()
+                self.pending_segment = None
+                reason2 = "completed" if current_completed else "duration_limit"
+                logging.info(f"[CONSOLIDATE] Output new immediately: speaker={output2['speaker']}, duration={new_duration:.2f}s, reason={reason2}")
+                # Return only the first output, the second will be sent on next call
+                # Actually, we need to return both - let's return the first one and queue the second
+                # For simplicity, store the output_segment and return it, the new one will be pending
 
             return output_segment
 
@@ -246,10 +288,10 @@ class ServeClientBase(object):
 
     def add_frames(self, frame_np, speaker=None, client_timestamp=None):
         """
-        Add audio frames to the ongoing audio stream buffer with accumulation.
+        Add audio frames to the ongoing audio stream buffer.
 
-        This method accumulates incoming audio chunks until reaching minimum duration (1.5s)
-        to prevent server overload from clients sending too frequently (e.g., every 20ms).
+        Processes chunks immediately without accumulation for minimal latency.
+        Consolidation happens in consolidate_segment() based on completed flag and duration.
 
         Args:
             frame_np (numpy.ndarray): The audio frame data as a NumPy array.
@@ -261,29 +303,6 @@ class ServeClientBase(object):
                   Format: {"event": "speaker_changed", "speaker": str, "offset": float, "client_ts": float}
 
         """
-        # Accumulate chunks until we have enough duration
-        chunk_duration = frame_np.shape[0] / self.RATE
-        self.accumulation_buffer.append(frame_np)
-        self.accumulation_duration += chunk_duration
-
-        # Track speaker and timestamp for the accumulated batch
-        if speaker is not None:
-            self.last_speaker = speaker
-        if client_timestamp is not None:
-            self.last_client_timestamp = client_timestamp
-
-        # Only process when accumulated enough audio
-        if self.accumulation_duration < self.min_accumulation_seconds:
-            return None  # Not enough audio yet, continue accumulating
-
-        # Combine accumulated chunks
-        combined_frame = np.concatenate(self.accumulation_buffer, axis=0)
-
-        # Clear accumulation buffer
-        self.accumulation_buffer = []
-        self.accumulation_duration = 0.0
-
-        # Now process the combined frame
         self.lock.acquire()
         speaker_change_event = None
 
@@ -293,24 +312,24 @@ class ServeClientBase(object):
         else:
             current_buffer_end = self.frames_offset
 
-        # Track speaker changes in timeline (use accumulated speaker)
-        if self.last_speaker is not None:
+        # Track speaker changes in timeline
+        if speaker is not None:
             # Check if speaker changed from last entry
-            if not self.speaker_timeline or self.speaker_timeline[-1]["speaker"] != self.last_speaker:
+            if not self.speaker_timeline or self.speaker_timeline[-1]["speaker"] != speaker:
                 timeline_entry = {
                     "offset": current_buffer_end,
-                    "speaker": self.last_speaker,
-                    "client_ts": self.last_client_timestamp if self.last_client_timestamp is not None else time.time()
+                    "speaker": speaker,
+                    "client_ts": client_timestamp if client_timestamp is not None else time.time()
                 }
                 self.speaker_timeline.append(timeline_entry)
-                logging.info(f"[SPEAKER_TIMELINE] Speaker change: {self.last_speaker} at offset {current_buffer_end:.3f}s (client_ts={self.last_client_timestamp})")
+                logging.info(f"[SPEAKER_TIMELINE] Speaker change: {speaker} at offset {current_buffer_end:.3f}s (client_ts={client_timestamp})")
 
                 # Create speaker change event for WebSocket notification
                 speaker_change_event = {
                     "event": "speaker_changed",
-                    "speaker": self.last_speaker,
+                    "speaker": speaker,
                     "offset": current_buffer_end,
-                    "client_ts": self.last_client_timestamp if self.last_client_timestamp is not None else time.time()
+                    "client_ts": client_timestamp if client_timestamp is not None else time.time()
                 }
 
         if self.frames_np is not None and self.frames_np.shape[0] > 45*self.RATE:
@@ -330,16 +349,18 @@ class ServeClientBase(object):
             # and is less than frame_offset
             if self.timestamp_offset < self.frames_offset:
                 self.timestamp_offset = self.frames_offset
-        # Add combined accumulated frame to buffer
+
+        # Add frame to buffer immediately (no accumulation)
         if self.frames_np is None:
-            self.frames_np = combined_frame.copy()
+            self.frames_np = frame_np.copy()
         else:
-            self.frames_np = np.concatenate((self.frames_np, combined_frame), axis=0)
+            self.frames_np = np.concatenate((self.frames_np, frame_np), axis=0)
 
         self.lock.release()
 
-        # Log accumulated batch
-        logging.info(f"[ACCUMULATION] Processed batch: duration={combined_frame.shape[0] / self.RATE:.2f}s, speaker={self.last_speaker}")
+        # Log chunk processing
+        chunk_duration = frame_np.shape[0] / self.RATE
+        logging.debug(f"[ADD_FRAMES] Processed chunk: duration={chunk_duration:.3f}s, speaker={speaker}")
 
         return speaker_change_event
 

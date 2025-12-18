@@ -61,7 +61,7 @@ class ServeClientBase(object):
         # Accumulation buffer for incoming chunks (prevents overload)
         self.accumulation_buffer = []
         self.accumulation_duration = 0.0
-        self.min_accumulation_seconds = 0.5  # Accept 0.5s chunks from client
+        self.min_accumulation_seconds = 1.5  # Minimum 1.5s to prevent hallucinations
         self.last_speaker = None
         self.last_client_timestamp = None
 

@@ -67,7 +67,7 @@ class ServeClientBase(object):
 
         # Output consolidation: merge consecutive segments from same speaker
         self.pending_segment = None  # {"text": str, "start": float, "end": float, "speaker": str}
-        self.max_pending_duration = 30.0  # Max duration before forcing output (seconds)
+        self.max_pending_duration = 8.0  # Max duration before forcing output (seconds)
         self.max_pause_to_merge = 2.0  # Max pause between segments to merge (seconds)
 
         # threading
